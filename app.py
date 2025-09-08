@@ -1,60 +1,77 @@
 import os
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import gspread
 from google.oauth2.service_account import Credentials
-from dotenv import load_dotenv
-
-
-load_dotenv()
-SHEET_ID = os.getenv("SHEET_ID")
-SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE")
-
-if not SHEET_ID:
-    raise ValueError(" Falta la variable SHEET_ID en el archivo .env")
-
-
-scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SHEET_ID).sheet1  
-
 
 app = Flask(__name__)
 CORS(app)
 
+# 🔹 Autenticación con Google Sheets usando variable de entorno
+service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+creds = Credentials.from_service_account_info(
+    service_account_info,
+    scopes=["https://www.googleapis.com/auth/spreadsheets"]
+)
+gc = gspread.authorize(creds)
+
+# 🔹 Conectar con tu hoja de Google Sheets
+SHEET_ID = os.environ["SHEET_ID"]
+sheet = gc.open_by_key(SHEET_ID).sheet1
+
+# =====================================================
+# Rutas del CRUD
+# =====================================================
+
+# 📌 Obtener todos los productos
 @app.route("/productos", methods=["GET"])
 def get_productos():
     data = sheet.get_all_records()
-    return jsonify(data)
+    return jsonify(data), 200
 
+# 📌 Agregar un nuevo producto
 @app.route("/productos", methods=["POST"])
 def add_producto():
-    nuevo = request.json
-    sheet.append_row([nuevo["id"], nuevo["nombre"], nuevo["precio"]])
-    return jsonify({"message": "Producto agregado correctamente"}), 201
+    data = request.get_json()
+    nombre = data.get("nombre")
+    precio = data.get("precio")
 
+    if not nombre or not precio:
+        return jsonify({"error": "Faltan datos"}), 400
 
-@app.route("/productos/<id>", methods=["PUT"])
-def update_producto(id):
-    data = sheet.get_all_records()
-    for idx, row in enumerate(data, start=2): 
-        if str(row["id"]) == str(id):
-            nuevo = request.json
-            sheet.update(f"A{idx}:C{idx}", [[nuevo["id"], nuevo["nombre"], nuevo["precio"]]])
-            return jsonify({"message": "Producto actualizado correctamente"})
-    return jsonify({"error": "Producto no encontrado"}), 404
+    sheet.append_row([nombre, precio])
+    return jsonify({"message": "Producto agregado"}), 201
 
+# 📌 Actualizar un producto por ID (fila en la hoja)
+@app.route("/productos/<int:row_id>", methods=["PUT"])
+def update_producto(row_id):
+    data = request.get_json()
+    nombre = data.get("nombre")
+    precio = data.get("precio")
 
-@app.route("/productos/<id>", methods=["DELETE"])
-def delete_producto(id):
-    data = sheet.get_all_records()
-    for idx, row in enumerate(data, start=2):
-        if str(row["id"]) == str(id):
-            sheet.delete_rows(idx)
-            return jsonify({"message": "Producto eliminado correctamente"})
-    return jsonify({"error": "Producto no encontrado"}), 404
+    if not nombre or not precio:
+        return jsonify({"error": "Faltan datos"}), 400
 
+    try:
+        sheet.update_cell(row_id + 1, 1, nombre)  # columna 1 = nombre
+        sheet.update_cell(row_id + 1, 2, precio)  # columna 2 = precio
+        return jsonify({"message": "Producto actualizado"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+# 📌 Eliminar un producto por ID (fila en la hoja)
+@app.route("/productos/<int:row_id>", methods=["DELETE"])
+def delete_producto(row_id):
+    try:
+        sheet.delete_rows(row_id + 1)
+        return jsonify({"message": "Producto eliminado"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# =====================================================
+# Inicio del servidor
+# =====================================================
 if __name__ == "__main__":
-    app.run(port=3000, debug=True)
+    port = int(os.environ.get("PORT", 3000))
+    app.run(host="0.0.0.0", port=port, debug=True)
